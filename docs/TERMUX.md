@@ -81,3 +81,22 @@ Then run the debloat list once more (step 3) if it contains the old launcher.
 | Termux is killed during a long run | Keep the screen on, or run `termux-wake-lock` first. |
 
 Close ADB when you are done (Developer options → debugging off); see the README's security question.
+
+## Add-ons (Sleep Timer, Weather, Prayer Times)
+
+Add-ons are separate apps in `addons/`; their own install scripts build with gradle, so from a phone use the
+cloud build here too.
+
+1. In your fork: **Actions** → **Build add-on APKs** → **Run workflow**. Leave the add-on list as it is, or
+   name some (`sleep-timer`, `weather`, `prayer-times`). The Prayer Times fields (city name, latitude, longitude
+   and the Aladhan method number, e.g. 20 for Kemenag Indonesia) are baked in at build time; run it again to
+   change them.
+2. Download the artifact **cleanyourtv-addons** into Downloads.
+3. Install:
+   ```
+   export TV_HOST=192.168.1.50
+   bash addons/install-apk.sh sleep-timer weather prayer-times
+   ```
+   `SRC=<zip>` names the file if it is not the newest `cleanyourtv-addons*.zip` in Downloads. Sleep Timer also
+   gets its accessibility service and app-ops (including TCL's auto-start) from its own script.
+4. Press Home and answer **Show card** for each. Weather asks for the city on the TV with the remote's keyboard.

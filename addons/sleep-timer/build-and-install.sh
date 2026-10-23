@@ -24,8 +24,16 @@ if [ "${1:-}" = --uninstall ]; then
   exit 0
 fi
 
-(cd "$HERE" && ./gradlew assembleRelease -q) || { echo "build failed (JDK 17 and Android SDK 34 needed; see launcher/README)" >&2; exit 1; }
-"$PY" -I "$TOOLS/b64push.py" "$HERE/app/build/outputs/apk/release/app-release.apk" /data/local/tmp/sleeptimer.apk >/dev/null
+# APK_FILE=<apk> installs a prebuilt APK and skips the build, for machines that cannot run gradle (Termux:
+# see addons/install-apk.sh and docs/TERMUX.md).
+if [ -n "${APK_FILE:-}" ]; then
+  [ -f "$APK_FILE" ] || { echo "ERROR: APK_FILE=$APK_FILE is not a file." >&2; exit 1; }
+  APK="$APK_FILE"
+else
+  (cd "$HERE" && ./gradlew assembleRelease -q) || { echo "build failed (JDK 17 and Android SDK 34 needed; see launcher/README)" >&2; exit 1; }
+  APK="$HERE/app/build/outputs/apk/release/app-release.apk"
+fi
+"$PY" -I "$TOOLS/b64push.py" "$APK" /data/local/tmp/sleeptimer.apk >/dev/null
 tv "pm install -r /data/local/tmp/sleeptimer.apk; rm -f /data/local/tmp/sleeptimer.apk"
 # Add the service to the enabled list without switching off the ones already there.
 tv "s=\$(settings get secure enabled_accessibility_services); case :\$s: in *:$SVC:*) ;; *) if [ -z \$s ] || [ \$s = null ]; then s=$SVC; else s=\$s:$SVC; fi; settings put secure enabled_accessibility_services \$s;; esac; settings put secure accessibility_enabled 1"

@@ -1,0 +1,85 @@
+name: Build add-on APKs
+
+# Builds add-ons in GitHub's cloud so they can be installed from a phone (Termux), where gradle and the
+# Android SDK do not run. Start it from the Actions tab: "Build add-on APKs" > "Run workflow".
+# Download the artifact "cleanyourtv-addons" (a zip with one <name>.apk per add-on) and install it with
+# addons/install-apk.sh (docs/TERMUX.md). Prayer Times reads its city and method at build time, so they
+# are inputs here; the other add-ons need no input.
+
+on:
+  workflow_dispatch:
+    inputs:
+      addons:
+        description: "Add-ons to build, separated by spaces"
+        default: "sleep-timer weather prayer-times"
+      place:
+        description: "Prayer Times: the city name shown on the page"
+        default: "Jakarta"
+      latitude:
+        description: "Prayer Times: latitude in decimal degrees"
+        default: "-6.2088"
+      longitude:
+        description: "Prayer Times: longitude in decimal degrees"
+        default: "106.8456"
+      method:
+        description: "Prayer Times: Aladhan calculation method number (20 = Kemenag Indonesia, 11 = Singapore, 17 = JAKIM)"
+        default: "20"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platforms;android-34 build-tools;34.0.0
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Set the Prayer Times city
+        env:
+          PLACE: ${{ inputs.place }}
+          LAT: ${{ inputs.latitude }}
+          LON: ${{ inputs.longitude }}
+          METHOD: ${{ inputs.method }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          place, lat, lon, method = (os.environ[k] for k in ("PLACE", "LAT", "LON", "METHOD"))
+          if not re.fullmatch(r"[A-Za-z0-9 ._-]{1,40}", place):
+              raise SystemExit(f"place: letters, digits, space . _ - only, up to 40: {place!r}")
+          float(lat); float(lon)
+          if not re.fullmatch(r"\d{1,2}", method):
+              raise SystemExit(f"method must be a number: {method!r}")
+          p = "addons/prayer-times/app/src/main/res/values/config.xml"
+          s = open(p).read()
+          for name, value in (("latitude", lat), ("longitude", lon), ("place", place), ("method", method)):
+              s, n = re.subn(r'(<string name="%s" translatable="false">)[^<]*(</string>)' % name,
+                             lambda m: m.group(1) + value + m.group(2), s)
+              assert n == 1, name
+          open(p, "w").write(s)
+          print(s)
+          PY
+      - name: Build the add-ons
+        env:
+          ADDONS: ${{ inputs.addons }}
+        run: |
+          mkdir -p out
+          for a in $ADDONS; do
+            [[ "$a" =~ ^[a-z][a-z-]*$ ]] && [ -d "addons/$a" ] || { echo "unknown add-on: $a"; exit 1; }
+            echo "::group::addons/$a"
+            (cd "addons/$a" && chmod +x gradlew && ./gradlew --no-daemon assembleRelease --console=plain)
+            cp "addons/$a/app/build/outputs/apk/release/app-release.apk" "out/$a.apk"
+            echo "::endgroup::"
+          done
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cleanyourtv-addons
+          path: out/*.apk
+          if-no-files-found: error
