@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # Build the launcher APK and install it on the TV as the default home screen.
 set -euo pipefail
+# APK_FILE=/path/to/app-release.apk installs a prebuilt APK and skips the JDK, Android SDK and gradle
+# steps. For machines that cannot run gradle, e.g. Termux on an Android phone: build the APK with
+# .github/workflows/build-launcher.yml, or on another computer, and pass it here (docs/TERMUX.md).
+# Resolved before the cd below, so a relative path means relative to where you ran the script.
+if [ -n "${APK_FILE:-}" ]; then
+  [ -f "$APK_FILE" ] || { echo "ERROR: APK_FILE=$APK_FILE is not a file." >&2; exit 1; }
+  APK_FILE="$(cd "$(dirname "$APK_FILE")" && pwd)/$(basename "$APK_FILE")"
+fi
 cd "$(dirname "$0")"
 : "${TV_HOST:?set TV_HOST to the TV IP address, e.g. TV_HOST=192.168.1.50 $0}"
 TOOLS="$(cd ../tools && pwd)"   # absolute, so the venv's Python doesn't warn about "../" in its prefix
@@ -19,29 +27,33 @@ if [ -n "$MIN_SDK" ] && [ -n "$TV_SDK" ] && [ "$TV_SDK" -lt "$MIN_SDK" ]; then
   echo "half would need your own build with a lower minSdk (docs/TROUBLESHOOTING.md)." >&2
   exit 1
 fi
-# macOS: java_home or Homebrew; Linux: the java on PATH.
-# `/usr/libexec/java_home -v 17` means "17 or newer", so on a Mac whose only JDK is newer it prints
-# that one and exits 0, and the Homebrew fallback below never runs. Gradle 8.9 then stops with
-# "Unsupported class file major version" (68 for JDK 24) before it reads a line of this project.
-# Homebrew's openjdk@17 is keg-only and is never registered where java_home would find it, so check
-# the version it answers with and fall through when it is not a 17. `java -version` goes to a
-# variable rather than through `grep -q`, whose early exit can SIGPIPE the JVM under `set -o pipefail`.
-if [ -z "${JAVA_HOME:-}" ]; then
-  JH="$(/usr/libexec/java_home -v 17 2>/dev/null || true)"
-  if [ -n "$JH" ]; then
-    case "$("$JH/bin/java" -version 2>&1 || true)" in *'version "17.'*) ;; *) JH="" ;; esac
+if [ -z "${APK_FILE:-}" ]; then
+  # macOS: java_home or Homebrew; Linux: the java on PATH.
+  # `/usr/libexec/java_home -v 17` means "17 or newer", so on a Mac whose only JDK is newer it prints
+  # that one and exits 0, and the Homebrew fallback below never runs. Gradle 8.9 then stops with
+  # "Unsupported class file major version" (68 for JDK 24) before it reads a line of this project.
+  # Homebrew's openjdk@17 is keg-only and is never registered where java_home would find it, so check
+  # the version it answers with and fall through when it is not a 17. `java -version` goes to a
+  # variable rather than through `grep -q`, whose early exit can SIGPIPE the JVM under `set -o pipefail`.
+  if [ -z "${JAVA_HOME:-}" ]; then
+    JH="$(/usr/libexec/java_home -v 17 2>/dev/null || true)"
+    if [ -n "$JH" ]; then
+      case "$("$JH/bin/java" -version 2>&1 || true)" in *'version "17.'*) ;; *) JH="" ;; esac
+    fi
+    if [ -z "$JH" ] && [ -d /opt/homebrew/opt/openjdk@17 ]; then JH=/opt/homebrew/opt/openjdk@17; fi
+    if [ -z "$JH" ]; then JH="$(java -XshowSettings:properties -version 2>&1 | awk '/java.home/ {print $3}')"; fi
+    JAVA_HOME="$JH"
   fi
-  if [ -z "$JH" ] && [ -d /opt/homebrew/opt/openjdk@17 ]; then JH=/opt/homebrew/opt/openjdk@17; fi
-  if [ -z "$JH" ]; then JH="$(java -XshowSettings:properties -version 2>&1 | awk '/java.home/ {print $3}')"; fi
-  JAVA_HOME="$JH"
+  export JAVA_HOME
+  # Android Studio's default SDK location on macOS, then on Linux, then Homebrew's command-line tools.
+  export ANDROID_HOME="${ANDROID_HOME:-$(for d in ~/Library/Android/sdk ~/Android/Sdk; do [ -d "$d" ] && echo "$d" && break; done)}"
+  export ANDROID_HOME="${ANDROID_HOME:-/opt/homebrew/share/android-commandlinetools}"
+  export PATH="$JAVA_HOME/bin:$PATH"
+  [ -f local.properties ] || echo "sdk.dir=$ANDROID_HOME" > local.properties
+  ./gradlew assembleRelease -q --console=plain
+else
+  echo "Using the prebuilt APK $APK_FILE (no build)."
 fi
-export JAVA_HOME
-# Android Studio's default SDK location on macOS, then on Linux, then Homebrew's command-line tools.
-export ANDROID_HOME="${ANDROID_HOME:-$(for d in ~/Library/Android/sdk ~/Android/Sdk; do [ -d "$d" ] && echo "$d" && break; done)}"
-export ANDROID_HOME="${ANDROID_HOME:-/opt/homebrew/share/android-commandlinetools}"
-export PATH="$JAVA_HOME/bin:$PATH"
-[ -f local.properties ] || echo "sdk.dir=$ANDROID_HOME" > local.properties
-./gradlew assembleRelease -q --console=plain
 # Which app owns Home differs by build (com.google.android.tvlauncher on Android TV,
 # com.google.android.apps.tv.launcherx on newer Google TV), so ask the TV instead of guessing.
 # Only a launcher we recognise is accepted: the answer can also be Android's chooser ("android"),
@@ -87,7 +99,7 @@ echo "Stock launcher: $STOCK_LAUNCHER"
 HOME_QUERY='cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME'
 if [ "$STOCK_LAUNCHER" = none ]; then DISABLE_STOCK="echo stock launcher left alone"
 else DISABLE_STOCK="pm disable-user --user 0 $STOCK_LAUNCHER"; fi
-APK=app/build/outputs/apk/release/app-release.apk
+APK="${APK_FILE:-app/build/outputs/apk/release/app-release.apk}"
 "$PY" -I ../tools/b64push.py "$APK" /data/local/tmp/tvhome.apk
 # Install on its own: in the batch below a failed install (e.g. "not enough space" on a full /data)
 # would not stop the stock launcher from being disabled.
